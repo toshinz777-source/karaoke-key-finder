@@ -25,8 +25,12 @@ because the song database now loads via `fetch('data/songs.json')`.
 - `js/notes.js` — pure music-theory helpers: note name ⇔ semitone
   conversion, transposition, and range-level derivation. No DOM, no
   storage — just math, so it's easy to unit test or reuse.
+- `js/pitch.js` — microphone pitch detection (Web Audio API
+  autocorrelation). No DOM either — it just calls an `onPitch(freq)`
+  callback with a detected frequency in Hz, or `null` for silence/noise.
 - `js/db.js` — data access: fetches the song database, and reads/writes
-  `localStorage` for custom songs and sing history.
+  `localStorage` for custom songs, sing history, and the measured vocal
+  range.
 - `js/analysis.js` — voice profile and recommendation calculations.
 - `js/app.js` — rendering and event wiring (async, since the song
   database now loads asynchronously).
@@ -72,26 +76,36 @@ ground truth, until a real data source is connected.
 
 ## How recommendations work
 
-1. `computeVoiceProfile(history, songDB)` looks at your sing history and:
-   - finds your most comfortable key adjustment (average key of songs
-     you rated 4–5 for ease),
-   - for history entries that reference a database song, transposes that
-     song's original notes by the key you sang it at, and averages those
-     into a **comfortable vocal envelope** (a `[low, high]` semitone
-     range) — this is "the range you've actually proven you can sing,"
-     not a self-reported label,
-   - also tracks your average score, easy/hard tendency, and the
-     gender/genre you tend to do best with.
-2. `computeRecommendations(songDB, history)` then, for each candidate
-   song, tries every key adjustment from -5 to +5, transposes that song's
-   `[lowestNote, highestNote]` by each one, and picks the key whose
-   transposed range best fits inside your comfortable envelope (going
-   above your comfortable ceiling is penalized more than going below the
-   floor, since hitting high notes is usually the harder problem in
-   karaoke). Difficulty-vs-your-history and gender/genre affinity add
-   smaller bonuses on top. The reason text either names a specific past
-   song with a similar transposed range, or describes the envelope
-   comparison directly.
+1. `computeVoiceProfile(history, songDB, measuredRange)` establishes your
+   **comfortable vocal envelope** (a `[low, high]` semitone range), in
+   priority order:
+   - **Mic measurement**, if you've done one (Voice Profile tab → "マイク
+     で測定する"): sing freely for ~20 seconds, `js/pitch.js` detects your
+     pitch in real time via autocorrelation, and the app keeps the 5th–95th
+     percentile of everything it detected (trimming outlier frames from
+     noise/mic pops) as your low/high notes. This works even with zero
+     sing history — the whole point is you can sing once and get matched
+     songs immediately.
+   - Otherwise, **sing history**: for entries that reference a database
+     song, it transposes that song's original notes by the key you sang
+     it at, and averages those into the envelope — "the range you've
+     actually proven you can sing," not a self-reported label.
+   - Otherwise, a **generic default** range, clearly labeled as such.
+   - Separately (and only from history, since these aren't range-related),
+     it also tracks your most comfortable key adjustment, average score,
+     easy/hard tendency, and the gender/genre you tend to do best with.
+2. `computeRecommendations(songDB, history, measuredRange)` then, for each
+   candidate song, tries every key adjustment from -5 to +5, transposes
+   that song's `[lowestNote, highestNote]` by each one, and picks the key
+   whose transposed range best fits inside your comfortable envelope
+   (going above your comfortable ceiling is penalized more than going
+   below the floor, since hitting high notes is usually the harder
+   problem in karaoke). Difficulty-vs-your-history and gender/genre
+   affinity add smaller bonuses on top (skipped gracefully if you have no
+   history yet). The reason text names a specific past song with a
+   similar transposed range when one exists, otherwise it describes the
+   envelope comparison directly and says which source (mic/history/
+   default) the envelope came from.
 
 This is still rule-based (no ML), but it's now grounded in actual note
 math instead of a coarse low/medium/high label, which is what makes it
@@ -109,10 +123,10 @@ meaningful to scale to a much larger song database.
   `js/db.js` is an explicit, currently-empty stub marking where a real
   (legally/technically available) JOYSOUND lookup would plug in, feeding
   the existing `joysound` field and badge.
-- **Microphone vocal range detection**: would produce the same
-  `{low, high}` shape as `computeVoiceProfile`'s `vocalEnvelope`, so it
-  could feed `computeRecommendations` directly, or be blended with the
-  history-derived envelope.
+- **Microphone vocal range detection**: implemented (`js/pitch.js` +
+  the Voice Profile tab's measurement flow). It's intentionally a simple
+  autocorrelation pitch tracker, not studio-grade — good enough for "am I
+  roughly in this range," which is all the recommender needs.
 - **AI-based recommendations**: would replace the scoring logic inside
   `computeRecommendations`, but can keep its input (song array + history
   array) and output (`{song, recommendedKey, matchPercent,

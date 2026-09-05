@@ -65,67 +65,76 @@ function resolveHistoryNoteRange(entry, songDB) {
 // 履歴からボイスプロファイル（傾向）を計算する。
 // songDBを渡すことで、履歴が参照する曲の音名から
 // 「実際に歌えた音域」を逆算できるようにしている。
-function computeVoiceProfile(history, songDB) {
-  if (!history || history.length === 0) return null;
+// measuredRangeが渡された場合（マイクで声域を測定済みの場合）は、
+// 履歴から推定した音域より優先して使う。実際に声を出して測った
+// データの方が、キー調整の申告から逆算するより直接的で信頼できるため。
+function computeVoiceProfile(history, songDB, measuredRange) {
+  const hasHistory = !!(history && history.length);
+  if (!hasHistory && !measuredRange) return null;
 
-  const avgEase = history.reduce((s, h) => s + h.ease, 0) / history.length;
+  let avgEase = null, avgScore = null, comfortableKey = 0, tendency = 'neutral';
+  let easiestSongs = [], dominantGender = null, dominantGenre = null, noteEntries = [];
 
-  const withScore = history.filter(h => h.score !== null && h.score !== undefined && h.score !== '');
-  const avgScore = withScore.length
-    ? Math.round(withScore.reduce((s, h) => s + Number(h.score), 0) / withScore.length)
-    : null;
+  if (hasHistory) {
+    avgEase = history.reduce((s, h) => s + h.ease, 0) / history.length;
 
-  // 歌いやすさ4以上の曲を「快適な曲」として扱う
-  const comfortable = history.filter(h => h.ease >= 4);
-  const basis = comfortable.length ? comfortable : history;
-  const comfortableKey = Math.round(basis.reduce((s, h) => s + h.keyAdjust, 0) / basis.length);
+    const withScore = history.filter(h => h.score !== null && h.score !== undefined && h.score !== '');
+    avgScore = withScore.length
+      ? Math.round(withScore.reduce((s, h) => s + Number(h.score), 0) / withScore.length)
+      : null;
 
-  const avgKeyAll = history.reduce((s, h) => s + h.keyAdjust, 0) / history.length;
-  let tendency = 'neutral';
-  if (avgKeyAll <= -0.5) tendency = 'lower';
-  else if (avgKeyAll >= 0.5) tendency = 'higher';
+    // 歌いやすさ4以上の曲を「快適な曲」として扱う
+    const comfortable = history.filter(h => h.ease >= 4);
+    const basis = comfortable.length ? comfortable : history;
+    comfortableKey = Math.round(basis.reduce((s, h) => s + h.keyAdjust, 0) / basis.length);
 
-  const easiestSongs = [...history]
-    .sort((a, b) => (b.ease - a.ease) || ((b.score || 0) - (a.score || 0)))
-    .slice(0, 3);
+    const avgKeyAll = history.reduce((s, h) => s + h.keyAdjust, 0) / history.length;
+    if (avgKeyAll <= -0.5) tendency = 'lower';
+    else if (avgKeyAll >= 0.5) tendency = 'higher';
 
-  const dominantGender = mode(comfortable.map(h => h.gender).filter(Boolean));
-  const dominantGenre = mode(comfortable.map(h => h.genre).filter(Boolean));
+    easiestSongs = [...history]
+      .sort((a, b) => (b.ease - a.ease) || ((b.score || 0) - (a.score || 0)))
+      .slice(0, 3);
 
-  // 快適に歌えた曲の「実際の音域（移調後）」を集めて、
-  // ユーザーの快適な音域(vocalEnvelope)を推定する
-  const noteEntries = comfortable
-    .map(h => resolveHistoryNoteRange(h, songDB))
-    .filter(Boolean);
+    dominantGender = mode(comfortable.map(h => h.gender).filter(Boolean));
+    dominantGenre = mode(comfortable.map(h => h.genre).filter(Boolean));
+
+    // 快適に歌えた曲の「実際の音域（移調後）」を集める
+    noteEntries = comfortable
+      .map(h => resolveHistoryNoteRange(h, songDB))
+      .filter(Boolean);
+  }
 
   let vocalEnvelope;
-  if (noteEntries.length) {
+  if (measuredRange) {
+    vocalEnvelope = { low: measuredRange.low, high: measuredRange.high, source: 'mic' };
+  } else if (noteEntries.length) {
     vocalEnvelope = {
       low: Math.round(noteEntries.reduce((s, e) => s + e.low, 0) / noteEntries.length),
       high: Math.round(noteEntries.reduce((s, e) => s + e.high, 0) / noteEntries.length),
-      fromHistory: true,
+      source: 'history',
     };
   } else {
-    // 履歴に音名を解決できる曲がない場合の一般的なデフォルト音域
-    vocalEnvelope = { low: noteToMidi('G3'), high: noteToMidi('D5'), fromHistory: false };
+    // 履歴もマイク測定もない場合の一般的なデフォルト音域
+    vocalEnvelope = { low: noteToMidi('G3'), high: noteToMidi('D5'), source: 'default' };
   }
 
   return {
     avgEase, avgScore, comfortableKey, tendency, easiestSongs,
     dominantGender, dominantGenre, vocalEnvelope, comfortableNoteEntries: noteEntries,
-    count: history.length,
+    count: hasHistory ? history.length : 0,
   };
 }
 
 // 曲データベースと履歴から、おすすめ曲リストを計算する。
 // 各曲について、快適な音域に最もよく収まるキー調整を探索し、
 // そのフィット具合を一致度の主な根拠にする。
-function computeRecommendations(songDB, history) {
-  const profile = computeVoiceProfile(history, songDB);
+function computeRecommendations(songDB, history, measuredRange) {
+  const profile = computeVoiceProfile(history, songDB, measuredRange);
 
-  const avgEase = profile ? profile.avgEase : 3;
+  const avgEase = (profile && profile.avgEase !== null) ? profile.avgEase : 3;
   const comfortLevel = avgEase >= 4 ? 3 : avgEase >= 2.5 ? 2 : 1;
-  const envelope = profile ? profile.vocalEnvelope : { low: noteToMidi('G3'), high: noteToMidi('D5'), fromHistory: false };
+  const envelope = profile ? profile.vocalEnvelope : { low: noteToMidi('G3'), high: noteToMidi('D5'), source: 'default' };
 
   return songDB.map(song => {
     const lowMidi = noteToMidi(song.lowestNote);
@@ -167,7 +176,7 @@ function computeRecommendations(songDB, history) {
 
     let reason;
     if (!profile) {
-      reason = '歌唱履歴がまだないので、一般的に歌いやすいとされる音域を基準におすすめしています。まずは何曲か記録してみましょう。';
+      reason = '歌唱履歴もマイク測定もまだないので、一般的に歌いやすいとされる音域を基準におすすめしています。まずは声域を測定するか、何曲か記録してみましょう。';
     } else {
       // 「快適な曲」の中から、移調後の音域が最も近い曲を探し、
       // 具体的な曲名を理由に使えないか試す
@@ -185,7 +194,10 @@ function computeRecommendations(songDB, history) {
       if (nearest && nearestDist <= SIMILAR_SONG_TOLERANCE) {
         reason = `「${nearest.entry.title}」を気持ちよく歌えたあなたの声域に近い曲です。`;
       } else {
-        reason = `あなたが快適に出せる音域(${displayNote(midiToNote(envelope.low))}〜${displayNote(midiToNote(envelope.high))})に、` +
+        const envelopeLabel = envelope.source === 'mic' ? 'マイクで測定したあなたの声域'
+          : envelope.source === 'history' ? 'あなたが快適に出せる音域'
+          : '一般的な目安の音域';
+        reason = `${envelopeLabel}(${displayNote(midiToNote(envelope.low))}〜${displayNote(midiToNote(envelope.high))})に、` +
           `この曲を${formatKey(bestKey)}にしたときの音域(${displayNote(transposedLow)}〜${displayNote(transposedHigh)})がよく収まります。`;
       }
       if (genderBonus > 0) reason += ' 得意なタイプの歌手の曲でもあります。';

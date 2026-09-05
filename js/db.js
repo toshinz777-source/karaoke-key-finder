@@ -12,6 +12,7 @@
 const STORAGE_KEYS = {
   history: 'kkf_history',
   customSongs: 'kkf_custom_songs',
+  measuredRange: 'kkf_measured_range',
 };
 
 const SONGS_DATA_URL = 'data/songs.json';
@@ -107,5 +108,18 @@ const DB = {
   deleteHistory(id) {
     const history = loadJSON(STORAGE_KEYS.history, []).filter(h => h.id !== id);
     saveJSON(STORAGE_KEYS.history, history);
+  },
+
+  // マイクで測定した声域(半音/MIDI番号)。{low, high, measuredAt, sampleCount}
+  getMeasuredRange() {
+    return loadJSON(STORAGE_KEYS.measuredRange, null);
+  },
+
+  saveMeasuredRange(range) {
+    saveJSON(STORAGE_KEYS.measuredRange, { ...range, measuredAt: new Date().toISOString() });
+  },
+
+  clearMeasuredRange() {
+    localStorage.removeItem(STORAGE_KEYS.measuredRange);
   },
 };

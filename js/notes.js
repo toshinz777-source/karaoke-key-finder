@@ -63,3 +63,8 @@ function semitoneDistance(noteA, noteB) {
   if (a === null || b === null) return null;
   return Math.abs(a - b);
 }
+
+// マイクのピッチ検出(pitch.js)が返す周波数(Hz)をMIDI番号に変換する
+function freqToMidi(freq) {
+  return 69 + 12 * Math.log2(freq / 440);
+}

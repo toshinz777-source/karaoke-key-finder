@@ -41,7 +41,7 @@ document.querySelectorAll('[data-nav]').forEach(el => {
 async function renderHome() {
   const history = DB.getHistory();
   const songDB = await DB.getAllSongs();
-  const profile = computeVoiceProfile(history, songDB);
+  const profile = computeVoiceProfile(history, songDB, DB.getMeasuredRange());
   document.getElementById('home-count').textContent = history.length;
   document.getElementById('home-key').textContent = profile ? formatKey(profile.comfortableKey) : '-';
   document.getElementById('home-score').textContent = profile && profile.avgScore !== null ? profile.avgScore : '-';
@@ -221,7 +221,7 @@ async function renderRecommendations() {
   const history = DB.getHistory();
   const allSongs = await DB.getAllSongs();
   const songs = allSongs.filter(songMatchesFilters);
-  const recs = computeRecommendations(songs, history);
+  const recs = computeRecommendations(songs, history, DB.getMeasuredRange());
 
   loading.classList.add('hidden');
   if (recs.length === 0) {
@@ -254,33 +254,41 @@ document.getElementById('recommend-search').addEventListener('input', e => {
 
 // ---------- ボイス分析 ----------
 
+const ENVELOPE_SOURCE_LABEL = {
+  mic: 'マイク測定',
+  history: '歌唱履歴から推定',
+  default: '一般的な目安',
+};
+
 async function renderProfile() {
   const history = DB.getHistory();
   const songDB = await DB.getAllSongs();
-  const profile = computeVoiceProfile(history, songDB);
+  const measuredRange = DB.getMeasuredRange();
+  const profile = computeVoiceProfile(history, songDB, measuredRange);
   const el = document.getElementById('profile-content');
 
   if (!profile) {
-    el.innerHTML = '<p class="empty-msg">まだ記録がありません。曲を記録するとボイス分析が表示されます。</p>';
+    el.innerHTML = '<p class="empty-msg">まだ記録がありません。マイクで測定するか、曲を記録するとボイス分析が表示されます。</p>';
     return;
   }
 
-  const easiestHtml = profile.easiestSongs.map(h => `
-    <li>${escapeHtml(h.title)} / ${escapeHtml(h.artist)} — ${formatKey(h.keyAdjust)}・歌いやすさ${'★'.repeat(h.ease)}</li>
-  `).join('');
+  const easiestHtml = profile.easiestSongs.length
+    ? profile.easiestSongs.map(h => `
+        <li>${escapeHtml(h.title)} / ${escapeHtml(h.artist)} — ${formatKey(h.keyAdjust)}・歌いやすさ${'★'.repeat(h.ease)}</li>
+      `).join('')
+    : '<li>まだ記録がありません</li>';
 
-  const envelopeText = profile.vocalEnvelope.fromHistory
-    ? `${displayNote(midiToNote(profile.vocalEnvelope.low))}〜${displayNote(midiToNote(profile.vocalEnvelope.high))}`
-    : '記録が少ないため一般的な目安を表示中';
+  const envelopeText = `${displayNote(midiToNote(profile.vocalEnvelope.low))}〜${displayNote(midiToNote(profile.vocalEnvelope.high))}`;
 
   el.innerHTML = `
     <div class="profile-card">
-      <div class="profile-label">得意なキー調整</div>
-      <div class="profile-value">${formatKey(profile.comfortableKey)}</div>
+      <div class="profile-label">快適な音域（${ENVELOPE_SOURCE_LABEL[profile.vocalEnvelope.source]}）</div>
+      <div class="profile-value" style="font-size:20px">${envelopeText}</div>
+      ${measuredRange ? '<button class="small-btn danger" id="clear-mic-range" style="margin-top:10px">マイク測定結果をクリア</button>' : ''}
     </div>
     <div class="profile-card">
-      <div class="profile-label">快適な音域</div>
-      <div class="profile-value" style="font-size:20px">${envelopeText}</div>
+      <div class="profile-label">得意なキー調整</div>
+      <div class="profile-value">${profile.count ? formatKey(profile.comfortableKey) : '記録なし'}</div>
     </div>
     <div class="profile-card">
       <div class="profile-label">平均カラオケスコア</div>
@@ -288,13 +296,23 @@ async function renderProfile() {
     </div>
     <div class="profile-card">
       <div class="profile-label">キーの傾向</div>
-      <div class="profile-value" style="font-size:17px">${tendencyLabel(profile.tendency)}</div>
+      <div class="profile-value" style="font-size:17px">${profile.count ? tendencyLabel(profile.tendency) : '記録なし'}</div>
     </div>
     <div class="profile-card">
       <div class="profile-label">歌いやすかった曲 トップ3</div>
       <ul class="profile-list">${easiestHtml}</ul>
     </div>
   `;
+
+  const clearBtn = document.getElementById('clear-mic-range');
+  if (clearBtn) {
+    clearBtn.addEventListener('click', async () => {
+      if (confirm('マイク測定結果を削除しますか？')) {
+        DB.clearMeasuredRange();
+        await renderProfile();
+      }
+    });
+  }
 }
 
 // ---------- 楽曲を追加 ----------
@@ -367,6 +385,115 @@ document.getElementById('custom-song-list').addEventListener('click', e => {
     DB.deleteCustomSong(btn.dataset.id);
     renderCustomSongs();
   }
+});
+
+// ---------- マイク測定モーダル ----------
+
+const micModal = document.getElementById('mic-modal');
+const micStepIntro = document.getElementById('mic-step-intro');
+const micStepRecording = document.getElementById('mic-step-recording');
+const micStepResult = document.getElementById('mic-step-result');
+const micError = document.getElementById('mic-error');
+
+let micReadings = [];
+let micAutoStopTimer = null;
+let micPendingResult = null;
+
+function showMicStep(step) {
+  micStepIntro.classList.toggle('hidden', step !== 'intro');
+  micStepRecording.classList.toggle('hidden', step !== 'recording');
+  micStepResult.classList.toggle('hidden', step !== 'result');
+}
+
+function showMicError(message) {
+  micError.textContent = message;
+  micError.classList.remove('hidden');
+}
+
+function openMicModal() {
+  micError.classList.add('hidden');
+  showMicStep('intro');
+  micModal.classList.remove('hidden');
+}
+
+function closeMicModal() {
+  PitchDetector.stop();
+  clearTimeout(micAutoStopTimer);
+  micModal.classList.add('hidden');
+}
+
+document.getElementById('open-mic-measure').addEventListener('click', openMicModal);
+document.getElementById('mic-cancel-btn').addEventListener('click', closeMicModal);
+
+document.getElementById('mic-start-btn').addEventListener('click', async () => {
+  if (!PitchDetector.isSupported()) {
+    showMicError('お使いのブラウザ、または接続(HTTPSが必要)ではマイク機能を利用できません。');
+    return;
+  }
+  micError.classList.add('hidden');
+  micReadings = [];
+  document.getElementById('mic-live-note').textContent = '-';
+  document.getElementById('mic-live-sub').textContent = '声を出してください…';
+  document.getElementById('mic-live-low').textContent = '最低音: -';
+  document.getElementById('mic-live-high').textContent = '最高音: -';
+
+  try {
+    await PitchDetector.start(onMicPitch);
+  } catch (err) {
+    showMicError('マイクへのアクセスが許可されませんでした。ブラウザの設定でマイクを許可してください。');
+    return;
+  }
+  showMicStep('recording');
+  // 万一止め忘れても60秒でマイクを止める安全装置
+  micAutoStopTimer = setTimeout(() => finishMicRecording(), 60000);
+});
+
+function onMicPitch(freq) {
+  if (freq === null) return;
+  const midi = freqToMidi(freq);
+  micReadings.push(midi);
+
+  document.getElementById('mic-live-note').textContent = displayNote(midiToNote(Math.round(midi)));
+  document.getElementById('mic-live-sub').textContent = `検出中… (${Math.round(freq)} Hz)`;
+
+  const low = Math.round(Math.min(...micReadings));
+  const high = Math.round(Math.max(...micReadings));
+  document.getElementById('mic-live-low').textContent = `最低音: ${displayNote(midiToNote(low))}`;
+  document.getElementById('mic-live-high').textContent = `最高音: ${displayNote(midiToNote(high))}`;
+}
+
+function finishMicRecording() {
+  clearTimeout(micAutoStopTimer);
+  PitchDetector.stop();
+
+  // ノイズや一瞬の外れ値を除くため、上下5%を切り捨てた範囲を採用する
+  if (micReadings.length < 30) {
+    showMicStep('intro');
+    showMicError('検出できた声が少なすぎました。マイクに向かって、はっきり長めに声を出してもう一度お試しください。');
+    return;
+  }
+  const sorted = [...micReadings].sort((a, b) => a - b);
+  const low = Math.round(sorted[Math.floor(sorted.length * 0.05)]);
+  const high = Math.round(sorted[Math.min(sorted.length - 1, Math.ceil(sorted.length * 0.95) - 1)]);
+
+  micPendingResult = { low, high, sampleCount: micReadings.length };
+  document.getElementById('mic-result-range').textContent =
+    `${displayNote(midiToNote(low))}〜${displayNote(midiToNote(high))}`;
+  showMicStep('result');
+}
+
+document.getElementById('mic-stop-btn').addEventListener('click', finishMicRecording);
+
+document.getElementById('mic-retry-btn').addEventListener('click', () => {
+  micPendingResult = null;
+  showMicStep('intro');
+});
+
+document.getElementById('mic-save-btn').addEventListener('click', async () => {
+  if (!micPendingResult) return;
+  DB.saveMeasuredRange(micPendingResult);
+  micModal.classList.add('hidden');
+  await renderProfile();
 });
 
 // ---------- ユーティリティ ----------

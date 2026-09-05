@@ -45,7 +45,7 @@ html, body {
   margin: 0 auto;
 }
 
-.view.hidden {
+.hidden {
   display: none;
 }
 
@@ -261,10 +261,6 @@ html, body {
   font-size: 16px;
 }
 
-.empty-msg.hidden {
-  display: none;
-}
-
 /* 検索 */
 .search-input {
   display: block;
@@ -382,6 +378,49 @@ html, body {
 
 .modal-actions .big-btn {
   flex: 1;
+}
+
+/* マイク測定 */
+.mic-cta-card {
+  text-align: center;
+}
+
+.mic-cta-title {
+  font-size: 18px;
+  font-weight: 700;
+  margin: 0 0 4px;
+}
+
+.mic-cta-desc {
+  font-size: 14px;
+  color: var(--color-muted);
+  margin: 0 0 12px;
+}
+
+.mic-error {
+  background: #fbe4e0;
+  color: #a13a2a;
+  border-radius: 10px;
+  padding: 10px 12px;
+  font-size: 14px;
+}
+
+.mic-live {
+  text-align: center;
+  padding: 24px 0 16px;
+}
+
+.mic-live-note {
+  font-size: 56px;
+  font-weight: 700;
+  color: var(--color-primary-dark);
+  line-height: 1;
+}
+
+.mic-live-sub {
+  font-size: 14px;
+  color: var(--color-muted);
+  margin-top: 8px;
 }
 
 /* ボイス分析 */
