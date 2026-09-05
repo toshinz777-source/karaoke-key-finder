@@ -1,0 +1,42 @@
+{
+  "permissions": {
+    "deny": [
+      "Read(./.env)",
+      "Read(./.env.*)",
+      "Read(**/.env)",
+      "Read(**/.env.*)",
+      "Edit(./.env)",
+      "Edit(./.env.*)",
+      "Edit(**/.env)",
+      "Edit(**/.env.*)",
+      "Write(./.env)",
+      "Write(./.env.*)",
+      "Write(**/.env)",
+      "Write(**/.env.*)",
+      "Read(**/*.pem)",
+      "Read(**/*.key)",
+      "Read(**/id_rsa)",
+      "Read(**/id_rsa.*)",
+      "Read(**/id_ed25519)",
+      "Read(**/id_ed25519.*)",
+      "Read(**/.ssh/**)",
+      "Edit(**/.ssh/**)",
+      "Write(**/.ssh/**)",
+      "Read(**/*credentials*)",
+      "Edit(**/*credentials*)",
+      "Write(**/*credentials*)",
+      "Read(**/*secret*)",
+      "Edit(**/*secret*)",
+      "Write(**/*secret*)",
+      "Read(**/*token*)",
+      "Read(**/*apikey*)",
+      "Read(**/*api_key*)",
+      "Bash(cat *.env*)",
+      "Bash(cat *credentials*)",
+      "Bash(cat *secret*)",
+      "Bash(env)",
+      "Bash(printenv*)"
+    ],
+    "blockReadsOutsideWorkingDirectories": true
+  }
+}
