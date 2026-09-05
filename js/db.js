@@ -1,30 +1,42 @@
-// 曲データベースと履歴の保存を担当するモジュール
-// 将来的にサーバーDBやJOYSOUND連携に差し替えやすいよう、
-// 「読み書きのインターフェース」をこのファイルに閉じ込めている。
+// データアクセス層。
+//
+// 曲データベースは data/songs.json から非同期に読み込む前提にしてある。
+// 今はサンプル43曲のJSONファイルだが、インターフェースは
+// 「getAllSongs()が曲の配列を返すPromise」だけなので、将来的に
+//   - 数千曲規模の外部JSONやAPIに songs.json を差し替える
+//   - JOYSOUND楽曲検索APIの結果をマージする
+// といった変更をしても、呼び出し側(app.js/analysis.js)は変更不要。
+// 履歴(history)と自分で追加した曲(customSongs)はこれまで通り
+// localStorageに保存する（ログイン不要のMVP方針を維持）。
 
 const STORAGE_KEYS = {
   history: 'kkf_history',
   customSongs: 'kkf_custom_songs',
 };
 
-// サンプルの日本語カラオケ楽曲データベース（初期データ）
-const DEFAULT_SONGS = [
-  { id: 's1', title: 'Lemon', artist: '米津玄師', gender: 'male', genre: 'pop', era: 'recent', range: 'high', difficulty: 'medium' },
-  { id: 's2', title: '前前前世', artist: 'RADWIMPS', gender: 'male', genre: 'rock', era: 'recent', range: 'high', difficulty: 'hard' },
-  { id: 's3', title: '花束を君に', artist: '宇多田ヒカル', gender: 'female', genre: 'ballad', era: 'recent', range: 'medium', difficulty: 'medium' },
-  { id: 's4', title: '恋', artist: '星野源', gender: 'male', genre: 'pop', era: 'recent', range: 'medium', difficulty: 'easy' },
-  { id: 's5', title: '紅蓮華', artist: 'LiSA', gender: 'female', genre: 'rock', era: 'recent', range: 'high', difficulty: 'hard' },
-  { id: 's6', title: 'First Love', artist: '宇多田ヒカル', gender: 'female', genre: 'ballad', era: 'old', range: 'medium', difficulty: 'medium' },
-  { id: 's7', title: '世界に一つだけの花', artist: 'SMAP', gender: 'group', genre: 'pop', era: 'old', range: 'medium', difficulty: 'easy' },
-  { id: 's8', title: '川の流れのように', artist: '美空ひばり', gender: 'female', genre: 'ballad', era: 'old', range: 'medium', difficulty: 'medium' },
-  { id: 's9', title: 'リンダリンダ', artist: 'THE BLUE HEARTS', gender: 'male', genre: 'rock', era: 'old', range: 'high', difficulty: 'hard' },
-  { id: 's10', title: '366日', artist: 'HY', gender: 'male', genre: 'ballad', era: 'recent', range: 'low', difficulty: 'easy' },
-  { id: 's11', title: 'Pretender', artist: 'Official髭男dism', gender: 'male', genre: 'pop', era: 'recent', range: 'high', difficulty: 'hard' },
-  { id: 's12', title: '打上花火', artist: 'DAOKO×米津玄師', gender: 'group', genre: 'pop', era: 'recent', range: 'medium', difficulty: 'medium' },
-  { id: 's13', title: 'さくら', artist: '森山直太朗', gender: 'male', genre: 'ballad', era: 'old', range: 'medium', difficulty: 'medium' },
-  { id: 's14', title: '香水', artist: '瑛人', gender: 'male', genre: 'pop', era: 'recent', range: 'low', difficulty: 'easy' },
-  { id: 's15', title: 'TSUNAMI', artist: 'サザンオールスターズ', gender: 'male', genre: 'rock', era: 'old', range: 'medium', difficulty: 'medium' },
-];
+const SONGS_DATA_URL = 'data/songs.json';
+
+// 曲データベース本体を保持する場所。将来ここを
+// 「JOYSOUND検索結果」や「サーバーAPIのレスポンス」に差し替えても、
+// getAllSongs()を呼ぶ側のコードは変わらない。
+const SongSource = {
+  _cache: null,
+
+  async getBuiltInSongs() {
+    if (this._cache) return this._cache;
+    const res = await fetch(SONGS_DATA_URL);
+    if (!res.ok) throw new Error(`曲データベースの読み込みに失敗しました (${res.status})`);
+    this._cache = await res.json();
+    return this._cache;
+  },
+
+  // --- 拡張ポイント（未実装） ---
+  // 本物のJOYSOUND検索や大規模DBに接続する際は、ここに実装を追加し、
+  // getAllSongs()内でマージする形にする。今は呼ばれても空配列を返すだけ。
+  async searchJoysound(_query) {
+    return [];
+  },
+};
 
 function loadJSON(key, fallback) {
   try {
@@ -39,17 +51,35 @@ function saveJSON(key, value) {
   localStorage.setItem(key, JSON.stringify(value));
 }
 
+// 古いバージョンで保存されたカスタム曲(音域レベルのみ・音名なし)でも
+// 落ちないように、音名が無ければ一般的な音域で補う
+function withNoteDefaults(song) {
+  return {
+    lowestNote: 'A3',
+    highestNote: 'D5',
+    originalKey: null,
+    joysound: null,
+    ...song,
+  };
+}
+
 const DB = {
-  getCustomSongs() {
-    return loadJSON(STORAGE_KEYS.customSongs, []);
+  async getBuiltInSongs() {
+    const songs = await SongSource.getBuiltInSongs();
+    return songs.map(withNoteDefaults);
   },
 
-  getAllSongs() {
-    return [...DEFAULT_SONGS, ...this.getCustomSongs()];
+  getCustomSongs() {
+    return loadJSON(STORAGE_KEYS.customSongs, []).map(withNoteDefaults);
+  },
+
+  async getAllSongs() {
+    const [builtIn, custom] = [await this.getBuiltInSongs(), this.getCustomSongs()];
+    return [...builtIn, ...custom];
   },
 
   addCustomSong(song) {
-    const songs = this.getCustomSongs();
+    const songs = loadJSON(STORAGE_KEYS.customSongs, []);
     const newSong = { id: 'c' + Date.now(), ...song };
     songs.push(newSong);
     saveJSON(STORAGE_KEYS.customSongs, songs);
@@ -57,7 +87,7 @@ const DB = {
   },
 
   deleteCustomSong(id) {
-    const songs = this.getCustomSongs().filter(s => s.id !== id);
+    const songs = loadJSON(STORAGE_KEYS.customSongs, []).filter(s => s.id !== id);
     saveJSON(STORAGE_KEYS.customSongs, songs);
   },
 

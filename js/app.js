@@ -1,25 +1,34 @@
 // UIの描画とイベント処理をまとめたモジュール。
+// 曲データベースは非同期(DB.getAllSongs())になったため、
+// 曲データが必要な描画関数はすべてasyncにしてある。
 
 const GENDER_LABEL = { male: '男性', female: '女性', group: 'グループ' };
 const GENRE_LABEL = { pop: 'ポップ', ballad: 'バラード', rock: 'ロック' };
 const ERA_LABEL = { old: '昔の曲', recent: '最近の曲' };
-const RANGE_LABEL = { low: '低め', medium: '普通', high: '高め' };
 const DIFFICULTY_LABEL = { easy: '易しい', medium: '普通', hard: '難しい' };
+const RANGE_LEVEL_LABEL = { low: '低め', medium: '普通', high: '高め' };
 
 let activeFilters = new Set();
+let searchQuery = '';
+
+function joysoundBadgeHtml(joysound) {
+  if (joysound === true) return '<span class="badge joysound-yes">JOYSOUND: 配信中</span>';
+  if (joysound === false) return '<span class="badge joysound-no">JOYSOUND: 配信なし</span>';
+  return '<span class="badge joysound-unknown">JOYSOUND: 不明</span>';
+}
 
 // ---------- ナビゲーション ----------
 
-function showView(name) {
+async function showView(name) {
   document.querySelectorAll('.view').forEach(v => v.classList.add('hidden'));
   document.getElementById(`view-${name}`).classList.remove('hidden');
   document.querySelectorAll('.nav-btn').forEach(btn => {
     btn.classList.toggle('active', btn.dataset.nav === name);
   });
-  if (name === 'home') renderHome();
-  if (name === 'mysongs') renderHistory();
-  if (name === 'recommend') renderRecommendations();
-  if (name === 'profile') renderProfile();
+  if (name === 'home') await renderHome();
+  if (name === 'mysongs') await renderHistory();
+  if (name === 'recommend') await renderRecommendations();
+  if (name === 'profile') await renderProfile();
   if (name === 'addsong') renderCustomSongs();
 }
 
@@ -29,9 +38,10 @@ document.querySelectorAll('[data-nav]').forEach(el => {
 
 // ---------- ホーム ----------
 
-function renderHome() {
+async function renderHome() {
   const history = DB.getHistory();
-  const profile = computeVoiceProfile(history);
+  const songDB = await DB.getAllSongs();
+  const profile = computeVoiceProfile(history, songDB);
   document.getElementById('home-count').textContent = history.length;
   document.getElementById('home-key').textContent = profile ? formatKey(profile.comfortableKey) : '-';
   document.getElementById('home-score').textContent = profile && profile.avgScore !== null ? profile.avgScore : '-';
@@ -57,7 +67,7 @@ function historyCardHtml(entry) {
   `;
 }
 
-function renderHistory() {
+async function renderHistory() {
   const history = DB.getHistory();
   const list = document.getElementById('history-list');
   const empty = document.getElementById('history-empty');
@@ -70,12 +80,12 @@ function renderHistory() {
   list.innerHTML = history.map(historyCardHtml).join('');
 }
 
-document.getElementById('history-list').addEventListener('click', e => {
+document.getElementById('history-list').addEventListener('click', async e => {
   const btn = e.target.closest('[data-action="delete-history"]');
   if (!btn) return;
   if (confirm('この記録を削除しますか？')) {
     DB.deleteHistory(btn.dataset.id);
-    renderHistory();
+    await renderHistory();
   }
 });
 
@@ -99,14 +109,15 @@ function populateKeySelect() {
 }
 populateKeySelect();
 
-function populateSongSelect() {
-  const songs = DB.getAllSongs();
+async function populateSongSelect() {
+  const songs = await DB.getAllSongs();
   historySongSelect.innerHTML = '<option value="">-- 選択しない（手入力） --</option>' +
     songs.map(s => `<option value="${s.id}">${escapeHtml(s.title)} / ${escapeHtml(s.artist)}</option>`).join('');
 }
 
-historySongSelect.addEventListener('change', () => {
-  const song = DB.getAllSongs().find(s => s.id === historySongSelect.value);
+historySongSelect.addEventListener('change', async () => {
+  const songs = await DB.getAllSongs();
+  const song = songs.find(s => s.id === historySongSelect.value);
   if (song) {
     document.getElementById('history-title').value = song.title;
     document.getElementById('history-artist').value = song.artist;
@@ -120,8 +131,8 @@ easeSelect.addEventListener('click', e => {
   [...easeSelect.children].forEach(b => b.classList.toggle('selected', b === btn));
 });
 
-function openHistoryModal() {
-  populateSongSelect();
+async function openHistoryModal() {
+  await populateSongSelect();
   document.getElementById('add-history-form').reset();
   populateKeySelect();
   selectedEase = 0;
@@ -136,14 +147,15 @@ function closeHistoryModal() {
 document.getElementById('open-add-history').addEventListener('click', openHistoryModal);
 document.getElementById('cancel-history').addEventListener('click', closeHistoryModal);
 
-document.getElementById('add-history-form').addEventListener('submit', e => {
+document.getElementById('add-history-form').addEventListener('submit', async e => {
   e.preventDefault();
   if (!selectedEase) {
     alert('歌いやすさを選択してください');
     return;
   }
   const songId = historySongSelect.value || null;
-  const song = songId ? DB.getAllSongs().find(s => s.id === songId) : null;
+  const songs = await DB.getAllSongs();
+  const song = songId ? songs.find(s => s.id === songId) : null;
   const scoreRaw = document.getElementById('history-score').value;
   DB.addHistory({
     songId,
@@ -154,9 +166,10 @@ document.getElementById('add-history-form').addEventListener('submit', e => {
     ease: selectedEase,
     notes: document.getElementById('history-notes').value.trim(),
     gender: song ? song.gender : null,
+    genre: song ? song.genre : null,
   });
   closeHistoryModal();
-  renderHistory();
+  await renderHistory();
 });
 
 // ---------- おすすめ ----------
@@ -172,12 +185,20 @@ function recommendationCardHtml(rec) {
         <span class="badge match">一致度 ${rec.matchPercent}%</span>
         <span class="badge">難易度: ${DIFFICULTY_LABEL[song.difficulty]}</span>
       </div>
+      <div class="badge-row">
+        <span class="badge note">キー変更後の音域: ${displayNote(rec.transposedLow)}〜${displayNote(rec.transposedHigh)}</span>
+        ${joysoundBadgeHtml(song.joysound)}
+      </div>
       <p class="song-reason">${escapeHtml(rec.reason)}</p>
     </div>
   `;
 }
 
 function songMatchesFilters(song) {
+  if (searchQuery) {
+    const q = searchQuery.toLowerCase();
+    if (!song.title.toLowerCase().includes(q) && !song.artist.toLowerCase().includes(q)) return false;
+  }
   if (activeFilters.size === 0) return true;
   for (const f of activeFilters) {
     const [type, value] = f.split(':');
@@ -189,22 +210,28 @@ function songMatchesFilters(song) {
   return true;
 }
 
-function renderRecommendations() {
-  const history = DB.getHistory();
-  const songs = DB.getAllSongs().filter(songMatchesFilters);
-  const recs = computeRecommendations(songs, history);
+async function renderRecommendations() {
+  const loading = document.getElementById('recommend-loading');
   const list = document.getElementById('recommend-list');
   const empty = document.getElementById('recommend-empty');
+  loading.classList.remove('hidden');
+  list.innerHTML = '';
+  empty.classList.add('hidden');
+
+  const history = DB.getHistory();
+  const allSongs = await DB.getAllSongs();
+  const songs = allSongs.filter(songMatchesFilters);
+  const recs = computeRecommendations(songs, history);
+
+  loading.classList.add('hidden');
   if (recs.length === 0) {
-    list.innerHTML = '';
     empty.classList.remove('hidden');
     return;
   }
-  empty.classList.add('hidden');
   list.innerHTML = recs.map(recommendationCardHtml).join('');
 }
 
-document.getElementById('filter-bar').addEventListener('click', e => {
+document.getElementById('filter-bar').addEventListener('click', async e => {
   const chip = e.target.closest('.filter-chip');
   if (!chip) return;
   const f = chip.dataset.filter;
@@ -215,14 +242,22 @@ document.getElementById('filter-bar').addEventListener('click', e => {
     activeFilters.add(f);
     chip.classList.add('active');
   }
-  renderRecommendations();
+  await renderRecommendations();
+});
+
+let searchDebounceTimer = null;
+document.getElementById('recommend-search').addEventListener('input', e => {
+  searchQuery = e.target.value.trim();
+  clearTimeout(searchDebounceTimer);
+  searchDebounceTimer = setTimeout(() => renderRecommendations(), 200);
 });
 
 // ---------- ボイス分析 ----------
 
-function renderProfile() {
+async function renderProfile() {
   const history = DB.getHistory();
-  const profile = computeVoiceProfile(history);
+  const songDB = await DB.getAllSongs();
+  const profile = computeVoiceProfile(history, songDB);
   const el = document.getElementById('profile-content');
 
   if (!profile) {
@@ -234,10 +269,18 @@ function renderProfile() {
     <li>${escapeHtml(h.title)} / ${escapeHtml(h.artist)} — ${formatKey(h.keyAdjust)}・歌いやすさ${'★'.repeat(h.ease)}</li>
   `).join('');
 
+  const envelopeText = profile.vocalEnvelope.fromHistory
+    ? `${displayNote(midiToNote(profile.vocalEnvelope.low))}〜${displayNote(midiToNote(profile.vocalEnvelope.high))}`
+    : '記録が少ないため一般的な目安を表示中';
+
   el.innerHTML = `
     <div class="profile-card">
       <div class="profile-label">得意なキー調整</div>
       <div class="profile-value">${formatKey(profile.comfortableKey)}</div>
+    </div>
+    <div class="profile-card">
+      <div class="profile-label">快適な音域</div>
+      <div class="profile-value" style="font-size:20px">${envelopeText}</div>
     </div>
     <div class="profile-card">
       <div class="profile-label">平均カラオケスコア</div>
@@ -258,14 +301,24 @@ function renderProfile() {
 
 document.getElementById('add-song-form').addEventListener('submit', e => {
   e.preventDefault();
+  const lowestNote = document.getElementById('song-lowest-note').value.trim();
+  const highestNote = document.getElementById('song-highest-note').value.trim();
+  if (noteToMidi(lowestNote) === null || noteToMidi(highestNote) === null) {
+    alert('音名は「A3」「C#4」のような形式で入力してください');
+    return;
+  }
+  const joysoundRaw = document.getElementById('song-joysound').value;
   DB.addCustomSong({
     title: document.getElementById('song-title').value.trim(),
     artist: document.getElementById('song-artist').value.trim(),
     gender: document.getElementById('song-gender').value,
     genre: document.getElementById('song-genre').value,
     era: document.getElementById('song-era').value,
-    range: document.getElementById('song-range').value,
+    lowestNote,
+    highestNote,
     difficulty: document.getElementById('song-difficulty').value,
+    originalKey: document.getElementById('song-original-key').value.trim() || null,
+    joysound: joysoundRaw === '' ? null : joysoundRaw === 'true',
   });
   e.target.reset();
   renderCustomSongs();
@@ -280,9 +333,13 @@ function customSongCardHtml(song) {
         <span class="badge">${GENDER_LABEL[song.gender]}</span>
         <span class="badge">${GENRE_LABEL[song.genre]}</span>
         <span class="badge">${ERA_LABEL[song.era]}</span>
-        <span class="badge">音域: ${RANGE_LABEL[song.range]}</span>
         <span class="badge">難易度: ${DIFFICULTY_LABEL[song.difficulty]}</span>
       </div>
+      <div class="badge-row">
+        <span class="badge note">音域: ${displayNote(song.lowestNote)}〜${displayNote(song.highestNote)} (${RANGE_LEVEL_LABEL[rangeLevelFromNotes(song.highestNote)]})</span>
+        ${joysoundBadgeHtml(song.joysound)}
+      </div>
+      ${song.originalKey ? `<p class="song-notes">原曲キー情報: ${escapeHtml(song.originalKey)}</p>` : ''}
       <div class="card-actions">
         <button class="small-btn danger" data-action="delete-song" data-id="${song.id}">削除する</button>
       </div>
