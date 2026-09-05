@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>歯の症状セルフチェック</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div class="app">
+    <header class="app-header">
+      <div class="logo">🦷</div>
+      <h1>歯の症状セルフチェック</h1>
+      <p class="subtitle">気になる症状を選んで、考えられる原因の目安を確認しましょう</p>
+    </header>
+
+    <main>
+      <section id="screen-check" class="screen">
+        <form id="symptom-form">
+          <div class="symptom-grid" id="symptom-grid"></div>
+          <button type="submit" class="btn-primary">診断する</button>
+        </form>
+      </section>
+
+      <section id="screen-result" class="screen hidden">
+        <div id="urgent-banner" class="urgent-banner hidden">
+          ⚠️ 緊急性の高い症状が含まれています。できるだけ早く歯科・口腔外科を受診してください。
+        </div>
+        <div id="result-list"></div>
+        <div class="result-actions">
+          <button id="btn-retry" class="btn-secondary">もう一度チェックする</button>
+        </div>
+      </section>
+    </main>
+
+    <footer class="disclaimer">
+      <p>
+        ※ このアプリは一般的な情報提供のみを目的としたセルフチェックツールであり、医学的な診断を行うものではありません。
+        症状が続く場合や心配な場合は、必ず歯科医院を受診してください。
+      </p>
+    </footer>
+  </div>
+
+  <script src="conditions.js"></script>
+  <script src="script.js"></script>
+</body>
+</html>
